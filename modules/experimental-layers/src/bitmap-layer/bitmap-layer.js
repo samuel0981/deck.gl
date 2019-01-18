@@ -18,18 +18,17 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
+/* global Image, HTMLCanvasElement */
 import {Layer} from '@deck.gl/core';
 import GL from '@luma.gl/constants';
-import {Model, Geometry, loadTextures} from 'luma.gl';
+import {Model, Geometry, loadTextures, Texture2D} from 'luma.gl';
 
-import BITMAP_VERTEX_SHADER from './bitmap-layer-vertex';
-import BITMAP_FRAGMENT_SHADER from './bitmap-layer-fragment';
-
-// Note: needs to match vertex shader
-const MAX_BITMAPS = 11;
+import vs from './bitmap-layer-vertex';
+import fs from './bitmap-layer-fragment';
 
 const defaultProps = {
-  images: {type: 'array', value: []},
+  image: null,
+  bitmapBounds: {type: 'array', value: [0, 0, 1, 1], compare: true},
 
   desaturate: {type: 'number', min: 0, max: 1, value: 0},
   blendMode: null,
@@ -37,10 +36,7 @@ const defaultProps = {
   // alpha is not effective when blending the bitmap layers with the base map.
   // Instead we need to manually dim/blend rgb values with a background color.
   transparentColor: {type: 'color', value: [0, 0, 0, 0]},
-  tintColor: {type: 'color', value: [255, 255, 255]},
-  // accessors
-  getCenter: {type: 'accessor', value: x => x.center},
-  getRotation: {type: 'accessor', value: x => x.rotation}
+  tintColor: {type: 'color', value: [255, 255, 255]}
 };
 
 /*
@@ -50,32 +46,45 @@ const defaultProps = {
  * @param {number} props.tintColor - color bias
  */
 export default class BitmapLayer extends Layer {
+  getShaders() {
+    const projectModule = this.use64bitProjection() ? 'project64' : 'project32';
+    return {vs, fs, modules: [projectModule, 'picking']};
+  }
+
   initializeState() {
     const {gl} = this.context;
     this.setState({model: this.getModel(gl)});
-
-    const {attributeManager} = this.state;
-    attributeManager.addInstanced({
-      instanceCenter: {size: 3, accessor: 'getCenter'},
-      instanceRotation: {size: 3, accessor: 'getRotation'},
-      instanceBitmapIndex: {size: 1, update: this.calculateInstanceBitmapIndex}
-    });
   }
 
-  updateState({props, oldProps}) {
-    if (props.images !== oldProps.images) {
-      let changed = !oldProps.images || props.images.length !== oldProps.images.length;
-      if (!changed) {
-        for (let i = 0; i < props.images.length; ++i) {
-          changed = changed || props.images[i] !== oldProps.images[i];
-        }
-      }
-      if (changed) {
-        this.loadMapImagesToTextures();
-      }
+  updateState({props, oldProps, changeFlags}) {
+    if (props.image !== oldProps.image) {
+      this.loadImage();
     }
-    const {desaturate} = props;
-    this.state.model.setUniforms({desaturate});
+
+    const {model} = this.state;
+    const {bitmapBounds, desaturate, transparentColor, tintColor} = props;
+
+    if (oldProps.bitmapBounds !== bitmapBounds) {
+      const bitmapBoundPositions = this.calculateBitmapBounds(bitmapBounds);
+      // set the four corner positions of bitmap
+      model.setUniforms({
+        leftBottom: bitmapBoundPositions[0],
+        rightBottom: bitmapBoundPositions[1],
+        rightTop: bitmapBoundPositions[2],
+        leftTop: bitmapBoundPositions[3]
+      });
+    }
+
+    if (
+      oldProps.desaturate !== desaturate ||
+      oldProps.transparentColor !== transparentColor ||
+      oldProps.tintColor !== tintColor
+    )
+      model.setUniforms({
+        desaturate,
+        transparentColor,
+        tintColor
+      });
   }
 
   getModel(gl) {
@@ -90,68 +99,93 @@ export default class BitmapLayer extends Layer {
       texCoords.push(vertex[0] / 2 + 0.5, -vertex[1] / 2 + 0.5);
     });
 
-    const model = new Model(gl, {
-      id: this.props.id,
-      vs: BITMAP_VERTEX_SHADER,
-      fs: BITMAP_FRAGMENT_SHADER,
-      shaderCache: this.context.shaderCache,
-      geometry: new Geometry({
-        drawMode: GL.TRIANGLES,
-        vertexCount: 6,
-        attributes: {
-          positions: new Float32Array(positions),
-          texCoords: new Float32Array(texCoords)
-        }
-      }),
-      isInstanced: true
-    });
-
-    return model;
-  }
-
-  draw({uniforms}) {
-    const {transparentColor, tintColor} = this.props;
-
-    // TODO fix zFighting
-
-    // Render the image
-    this.state.model.render(
-      Object.assign({}, uniforms, {
-        transparentColor,
-        tintColor
+    return new Model(
+      gl,
+      Object.assign({}, this.getShaders(), {
+        id: this.props.id,
+        shaderCache: this.context.shaderCache,
+        geometry: new Geometry({
+          drawMode: GL.TRIANGLES,
+          vertexCount: 6,
+          attributes: {
+            texCoords: new Float32Array(texCoords)
+          }
+        }),
+        isInstanced: true
       })
     );
   }
 
-  loadMapImagesToTextures() {
-    const {model} = this.state;
-    const {images} = this.props;
-    for (let i = 0; i < Math.min(images.length, MAX_BITMAPS); i++) {
+  draw({uniforms}) {
+    const {bitmapTexture} = this.state;
+
+    // TODO fix zFighting
+    // Render the image
+    if (bitmapTexture) {
+      this.state.model.render(
+        Object.assign({}, uniforms, {
+          bitmapTexture
+        })
+      );
+    }
+  }
+
+  loadImage() {
+    const {gl} = this.context;
+    const {image} = this.props;
+
+    if (typeof image === 'string') {
       loadTextures(this.context.gl, {
-        urls: [images[i]]
+        urls: [image]
       }).then(([texture]) => {
-        return model.setUniforms({[`uBitmap${i}`]: texture});
+        this.setState({bitmapTexture: texture});
       });
+    } else if (image instanceof Texture2D) {
+      this.setState({bitmapTexture: image});
+    } else if (
+      // browser object
+      image instanceof Image ||
+      image instanceof HTMLCanvasElement
+    ) {
+      this.setState({bitmapTexture: new Texture2D(gl, {data: image})});
     }
   }
 
-  getBitmapIndex(point) {
-    const url = point.imageUrl;
-    const idx = Math.max(this.props.images.indexOf(url), 0);
-    return idx >= MAX_BITMAPS ? 0 : idx;
-  }
+  calculateBitmapBounds() {
+    const {bitmapBounds} = this.props;
+    const positions = [];
+    const positions64xyLow = [];
 
-  calculateInstanceBitmapIndex(attribute) {
-    const {data} = this.props;
-    const {value, size} = attribute;
-    let i = 0;
-    for (const point of data) {
-      const bitmapIndex = Number.isFinite(point.bitmapIndex)
-        ? point.bitmapIndex
-        : this.getBitmapIndex(point);
-      value[i] = bitmapIndex;
-      i += size;
+    // bitmapBounds as [left, bottom, right, top]
+    if (Number.isFinite(bitmapBounds[0])) {
+      /*
+        (l0, t3) ----- (r2, t3)
+           |              |
+           |              |
+           |              |
+        (l0, b1) ----- (l2, s1)
+     */
+      positions[0] = [bitmapBounds[0], bitmapBounds[1], 0];
+      positions[1] = [bitmapBounds[2], bitmapBounds[1], 0];
+      positions[2] = [bitmapBounds[2], bitmapBounds[3], 0];
+      positions[3] = [bitmapBounds[0], bitmapBounds[3], 0];
+
+      positions64xyLow[0] = [];
+    } else {
+      // [[x, y], ...] or [[x, y, z], ...]
+      positions[0] = bitmapBounds[0];
+      positions[1] = bitmapBounds[1];
+      positions[2] = bitmapBounds[2];
+      positions[3] = bitmapBounds[3];
     }
+
+    for (const position of positions) {
+      if (position.length === 2) {
+        position.push(0);
+      }
+    }
+
+    return positions;
   }
 }
 
