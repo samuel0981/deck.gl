@@ -202,7 +202,6 @@ const GPUGridLayerPerfExample = (id, getData) => ({
 const BitmapLayerExample = {
   layer: BitmapLayer,
   props: {
-    data: [{}],
     id: 'bitmap-layer',
     image: 'data/radar.gif',
     bitmapBounds: [[-80.425, 37.936], [-71.516, 37.936], [-71.516, 46.437], [-80.425, 46.437]]

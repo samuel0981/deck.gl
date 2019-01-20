@@ -27,6 +27,7 @@ import vs from './bitmap-layer-vertex';
 import fs from './bitmap-layer-fragment';
 
 const defaultProps = {
+  data: [{}],
   image: null,
   bitmapBounds: {type: 'array', value: [0, 0, 1, 1], compare: true},
 
@@ -154,7 +155,6 @@ export default class BitmapLayer extends Layer {
   calculateBitmapBounds() {
     const {bitmapBounds} = this.props;
     const positions = [];
-    const positions64xyLow = [];
 
     // bitmapBounds as [left, bottom, right, top]
     if (Number.isFinite(bitmapBounds[0])) {
@@ -169,8 +169,6 @@ export default class BitmapLayer extends Layer {
       positions[1] = [bitmapBounds[2], bitmapBounds[1], 0];
       positions[2] = [bitmapBounds[2], bitmapBounds[3], 0];
       positions[3] = [bitmapBounds[0], bitmapBounds[3], 0];
-
-      positions64xyLow[0] = [];
     } else {
       // [[x, y], ...] or [[x, y, z], ...]
       positions[0] = bitmapBounds[0];

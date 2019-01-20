@@ -17,7 +17,7 @@ void main(void) {
   vec3 p1 = mix(leftTop, rightTop, texCoords.x);
   vec3 position = mix(p0, p1, texCoords.y);
  
-  gl_Position = project_position_to_clipspace(vec3(position.xy, 0.0), vec2(0.0), vec3(0.0));
+  gl_Position = project_position_to_clipspace(position, vec2(0.0), vec3(0.0));
  
   vTexCoord = texCoords;
  
